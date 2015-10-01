@@ -9,3 +9,6 @@ gem 'globalphone_dbgen'
 gem 'pry'
 gem 'redis'
 gem 'redis-namespace'
+
+gem 'activesupport'
+

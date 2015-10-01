@@ -17,6 +17,17 @@ require 'redis-namespace'
 
 
 
+# amazon stuff
+require "cgi"
+require "base64"
+require "openssl"
+require "digest/sha1"
+require "uri"
+require "net/https"
+require "rexml/document"
+require "time"
+require 'active_support/core_ext/hash' #for hash.from_xml
+
 
 domains = [
 
@@ -38298,33 +38309,33 @@ domains = [
 UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2227.1 Safari/537.36'
 
 # ALL OPTIONS: http://stackoverflow.com/questions/14227555/how-to-crawl-only-the-root-url-with-anemone
-DEFAULT_OPTS = {
-  :depth_limit=>1,
-  :user_agent=>UA,
-  :discard_page_bodies => true,
-  :storage=> Anemone::Storage.PStore('pages.pstore'),
-  :accept_cookies => true,
-  :read_timeout => 10,
-  :verbose=>true
-}
+
+AWS_KEY = 'AKIAIYT3OSIAJ6L5JZAA'
+AWS_SECRET = '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'
+SERVICE_HOST = "awis.amazonaws.com"
 
 #domains = ['https://vitamart.ca']   ### make sure all urls have http in beginning, else relative url errors will occur
-#domains = domains.shuffle[0..25]
+domains = domains.shuffle[0..1000]
+domains = ['http://www.fashionnova.com']
 # domains = ['http://bexargoods.com']
 
 
-object1 = Marshal.load(File.read('../mashape/"hs-analytics"/response_object_1')); 0
-arr = object1.body['hits']['hits']; 0
-domains = []
-arr.each_with_index do |i,indx|
-  # puts 'jrb + ' + indx.to_s
-  # all sites seem to have redirect urls (and we only care about the ultimate domain so follow those)
-  if indx%1000 == 0 then puts "adding domains #{indx/1000}%" end
-  domains << 'http://'+get_domain(i['fields']['redirect'][0])
-end ; 0
-domains = domains.shuffle[0..10000]
+# object1 = Marshal.load(File.read('../mashape/"hs-analytics"/response_object_1')); 0
+# arr = object1.body['hits']['hits']; 0
+# domains = []
+# arr.each_with_index do |i,indx|
+#   # puts 'jrb + ' + indx.to_s
+#   # all sites seem to have redirect urls (and we only care about the ultimate domain so follow those)
+#   if indx%1000 == 0 then puts "adding domains #{indx/1000}%" end
+#   domains << 'http://'+get_domain(i['fields']['redirect'][0])
+# end ; 0
+# domains = domains.shuffle[0..10000]
 
 
+
+def escapeRFC3986(str)
+  return URI.escape(str,/[^A-Za-z0-9\-_.~]/)
+end
 
 
 puts 'Started at: ' + Time.now.to_s
@@ -38332,174 +38343,55 @@ site_hash = {}
 errors = {}
 domains.each_with_index do |target, target_indx|
 
-
-
-  begin
-  uri = URI(target)
+  domain = get_domain(target)
+  uri = URI('http://'+domain)
   #site = Site.first_or_create({ :host => uri.host }, { :created_at => Time.now })
-  $stderr.puts "Scanning #{uri.host}"
+  $stderr.puts "Scanning #{domain}"
 
-  # output structure columns
-  # domain
-  # emails
-  # twitters
-
-  a = Anemone
-
-  a.crawl(uri, DEFAULT_OPTS) do |anemone|
-
-    
-    anemone.on_every_page do |crawled_page|
-
-      #if crawled_page.url.to_s.include? 'https://www.azuqua.com/solutions' then binding.pry end
-
-
-
-      domain = get_domain(target)
-      if !site_hash.has_key?(domain)
-        site_hash[domain] = {}
-        site_hash[domain]['twitters0'] = []
-        site_hash[domain]['twitters1'] = []
-        site_hash[domain]['emails0'] = []
-        site_hash[domain]['emails1'] = []
-        site_hash[domain]['country'] = []
-        site_hash[domain]['pages_crawled'] = 0
-        site_hash[domain]['redirect_pages'] = 0
-      end
-
-      puts '------------------- Domain #' + target_indx.to_s + '---------------------'
-      puts crawled_page.url
-      puts crawled_page.code
-
-
-      # remember that by default, anemone only follows links that are in your domain (no external links, so no need for that logic)
-      if ( crawled_page.code == nil || crawled_page.code >= 400 )
-        next
-      end
-
-
-      if(site_hash[domain] )
-        puts 'redirect_pages: ' + site_hash[domain]['redirect_pages'].to_s
-      end
-
-      if ( [301, 302].any? {|status| crawled_page.code == status}  )
-        site_hash[domain]['redirect_pages'] += 1
-        if site_hash[domain]['redirect_pages'] < 25 # if its done this >50 times, strong chance its caught in some redirect loop
-          domains << crawled_page.redirect_to.to_s
-        end
-        next # since crawled_page.body will be nil if we keep going
-      end
-
-
-      depth = crawled_page.depth.to_s
-      if depth.to_i > 1 then depth = '1' end
-
-
-      crawled_page.body.scan(/[https?:\/\/]+[www.]*twitter.com\/[a-zA-Z0-9_]+/).each do |twitter|
-
-        twitter = twitter.downcase
-        found = ( site_hash[domain]['twitters0'] + site_hash[domain]['twitters1'] ).any? {|tw| tw.include? twitter.split('/').last }
-
-
-        bad_words = ['share', 'widgets', 'intent', 'search']
-        true_statements = [
-          !twitter.empty?,
-          !(bad_words.any?{|word| twitter.include?(word)}),
-          !found,
-        ]
-
-
-        site_hash[domain]['twitters'+depth] += [twitter] unless true_statements.include? false
-
-      end
-
-      #binding.pry
-
-      crawled_page.body.scan(/[\w\d]+[\w\d.-]@[\w\d.-]+\.\w{2,6}/).each do |address|
-
-        address = address.downcase
-
-        if address.empty?
-          found = true
-        else
-          good_pages_for_emails = ['contact', 'support', 'connect']
-          found_on_good_pg = good_pages_for_emails.any?{|p| crawled_page.url.to_s.include? p } ? mod_depth = '0' : mod_depth = depth
-          
-          if(found_on_good_pg)
-            look_in_arr = site_hash[domain]['emails0']
-            site_hash[domain]['emails1'].delete(address)
-          else
-            look_in_arr = site_hash[domain]['emails0'] + site_hash[domain]['emails1']
-          end
-          found = look_in_arr.any? {|em| em.include? address }
-        end
-
-        if address.include? 'email.com' then found = true end
-
-        if TLDS.any? {|tld| address.split('.').last == tld }          
-          site_hash[domain]['emails'+mod_depth]  += [address] if !found
-        end
-        # if Address.first(:email => address).nil?
-
-        #   puts 'found email ---------------------------'
-        #   puts address
-
-
-        #   page = Page.first_or_create(
-        #     { :url => crawled_page.url.to_s },
-        #     {
-        #       :site => site,
-        #       :created_at => Time.now
-        #     }
-        #   )
-
-        #   Address.create(
-        #     :email => address,
-        #     :site => site,
-        #     :page => page,
-        #     :created_at => Time.now
-        #   )
-
-        #   puts address
-        # end
-
-      end
-
-
-      if crawled_page.depth == 0 # we're on the first non-redirect page
-        #### remember that on the previous ones, we wanted to scan source code
-        #### for this one, we only want to scan VISIBLE TEXT (or else it gets all sorts of random numbers)
-        crawled_page.doc.inner_text.scan(/[+\d()]+.[+\d()]+.\d+.\d+.\d+/).each do |num|
-          begin
-          parsed_val = GlobalPhone.parse(num) if (num[0] == '+') || (num.gsub(/\D/, '').size == 9) || (num.gsub(/\D/, '').size == 10)
-          if parsed_val
-            site_hash[domain]['country'] += [parsed_val.territory.name] unless site_hash[domain]['country'].include? parsed_val.territory.name
-          end
-          rescue 
-            binding.pry
-          end
-        end
-      end
-
-
-
-      site_hash[domain]['pages_crawled'] += 1
-
-
-
-    end
-
-
+  if !site_hash.has_key?(domain)
+    site_hash[domain] = {}
+    site_hash[domain]['response'] = {}
+    site_hash[domain]['links'] = []
+    site_hash[domain]['ranks'] = []
   end
-  rescue Exception => e
-
-    binding.pry
-    puts "error ---------------------------"
-    puts e
 
 
+  query = {
+    "Action"           => "UrlInfo",
+    "AWSAccessKeyId"   => AWS_KEY,
+    "Timestamp"        => ( Time::now ).utc.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    "ResponseGroup"    => "Rank,ContactInfo,LinksInCount",
+    "SignatureVersion" => 2,
+    "SignatureMethod"  => "HmacSHA1",
+    "Url"              => domain
+  }
 
+  query_str = query.sort.map{|k,v| k + "=" + escapeRFC3986(v.to_s())}.join('&')
+  sign_str = "GET\n" + SERVICE_HOST + "\n/\n" + query_str 
+  signature = Base64.encode64( OpenSSL::HMAC.digest( OpenSSL::Digest::Digest.new( "sha1" ), AWS_SECRET, sign_str)).strip
+  query_str += "&Signature=" + escapeRFC3986(signature)
+
+  url = URI.parse("http://" + SERVICE_HOST + "/?" + query_str)
+  xml  = REXML::Document.new( Net::HTTP.get(url) )
+
+  site_hash[domain]['response'] = Hash.from_xml(xml.to_s)
+
+
+  links = []
+  REXML::XPath.each(xml,"//aws:LinksInCount"){|el| links << el.text}
+  site_hash[domain]['links'] = links
+
+
+  ranks = []
+  REXML::XPath.each(xml,"//aws:Rank"){|el| ranks << el.text}
+  site_hash[domain]['ranks'] = ranks
+
+  if target_indx % 1000 == 0
+    puts "Dumped #{target_indx} at: " + Time.now.to_s
+    File.open("site_hash_#{target_indx}", 'wb') {|f| f.write(Marshal.dump(site_hash)) }
+    #site_hash = {}
   end
+
   puts ''
   puts ''
   puts ''
@@ -38513,10 +38405,6 @@ end
 
 
 
-
-File.open("site_hash", 'wb') {|f| f.write(Marshal.dump(site_hash)) }
-File.open("errors", 'wb') {|f| f.write(Marshal.dump(errors)) }
-puts 'Completed at: ' + Time.now.to_s
 
 
 binding.pry
